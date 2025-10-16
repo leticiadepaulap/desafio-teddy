@@ -17,3 +17,9 @@ def extract_and_save_data():
     data = fetch_data()
     with open(f"{DATA_DIR}/raw_data.json", "w") as f:
         json.dump(data, f)
+
+def read_data():
+    """Lê dados do arquivo raw_data.json"""
+    file_path = os.path.join(DATA_DIR, "raw_data.json")
+    with open(file_path, "r") as f:
+        return json.load(f)

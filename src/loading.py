@@ -5,6 +5,8 @@ from sqlalchemy import create_engine, text
 from typing import Optional
 from datetime import datetime
 import pandas as pd
+import json
+
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -171,3 +173,9 @@ def load_data():
         insert_if_new(df, table_name="tarefas", id_column="id")
     except Exception as e:
         logger.error(f"Erro ao carregar dados: {str(e)}")
+
+def save_data(data, filename="output.json"):
+    """Salva dados em JSON no diretório de destino"""
+    file_path = os.path.join(DATA_DIR, filename)
+    with open(file_path, "w") as f:
+        json.dump(data, f)
