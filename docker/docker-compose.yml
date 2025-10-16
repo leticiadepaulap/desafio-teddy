@@ -5,15 +5,16 @@ services:
     image: postgres:15
     container_name: airflow-db
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Password123
+      POSTGRES_DB: datalake
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - airflow-db-volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 10s
       retries: 5
       timeout: 5s
@@ -26,7 +27,7 @@ services:
         condition: service_healthy
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:Password123@airflow-db:5432/datalake
       AIRFLOW__CORE__FERNET_KEY: B0hQySep0n5bnqxuZ-AJsdtCxRe77VmWBGc2L9UAjAc=
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       _AIRFLOW_DB_UPGRADE: 'true'
@@ -39,6 +40,7 @@ services:
       - ../plugins:/opt/airflow/plugins
       - ../src:/opt/airflow/src
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data 
     command: >
       bash -c "
       until pg_isready -h airflow-db -p 5432; do sleep 2; done;
@@ -55,7 +57,7 @@ services:
       - airflow-init
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:Password123@airflow-db:5432/datalake
       AIRFLOW__CORE__FERNET_KEY: B0hQySep0n5bnqxuZ-AJsdtCxRe77VmWBGc2L9UAjAc=
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
@@ -65,6 +67,7 @@ services:
       - ../plugins:/opt/airflow/plugins
       - ../src:/opt/airflow/src
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data 
     ports:
       - "8080:8080"
     command: webserver
@@ -77,7 +80,7 @@ services:
       - airflow-init
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:Password123@airflow-db:5432/datalake
       AIRFLOW__CORE__FERNET_KEY: B0hQySep0n5bnqxuZ-AJsdtCxRe77VmWBGc2L9UAjAc=
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
@@ -87,6 +90,7 @@ services:
       - ../plugins:/opt/airflow/plugins
       - ../src:/opt/airflow/src      
       - ../.env:/opt/airflow/.env
+      - ../data:/opt/airflow/data 
     command: scheduler
 
 volumes:

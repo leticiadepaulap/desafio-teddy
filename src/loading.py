@@ -1,18 +1,18 @@
 import os
 import logging
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text
+from typing import Optional
+from datetime import datetime
 import pandas as pd
-from typing import Tuple, Optional
 
 # Configurar logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO)
 
 # Carrega variáveis de ambiente
 load_dotenv(dotenv_path="/opt/airflow/.env")
-
-# Configurações
-DATA_DIR = "/opt/airflow/dags/data"
 
 # Variáveis do banco
 user = os.getenv("DB_USER")
@@ -30,242 +30,144 @@ def validate_env_variables() -> bool:
         "DB_HOST": host,
         "DB_PORT": port,
         "DB_DATABASE": db,
+        "DB_SCHEMA": schema,
     }
-    
-    missing_vars = [var_name for var_name, var_value in required_vars.items() if not var_value]
-    
-    if missing_vars:
-        logger.error(f"Variaveis de ambiente faltando: {missing_vars}")
+    missing = [k for k, v in required_vars.items() if not v]
+    if missing:
+        logger.error(f"Variáveis de ambiente faltando: {missing}")
         return False
-    
-    logger.info("Todas as variaveis de ambiente validadas")
+    logger.info("Todas as variáveis de ambiente estão presentes")
     return True
 
 def create_db_engine() -> Optional[create_engine]:
-    """Cria e retorna a engine de conexão com o banco"""
+    """Cria e testa a engine de conexão"""
+    if not validate_env_variables():
+        return None
     try:
-        if not validate_env_variables():
-            return None
-            
-        connection_string = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+        conn_str = f"postgresql://{user}:{password}@{host}:{port}/{db}"
         engine = create_engine(
-            connection_string,
+            conn_str,
             connect_args={"options": f"-c search_path={schema}"},
             pool_pre_ping=True,
             echo=False
         )
-        
-        # Testar conexão
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-            
-        logger.info("Engine de banco de dados criada com sucesso")
+        logger.info("Conexão com banco estabelecida com sucesso")
         return engine
-        
     except Exception as e:
-        logger.error(f"Erro ao criar engine do banco: {str(e)}")
+        logger.error(f"Erro ao conectar com banco: {str(e)}")
         return None
 
-# Engine global
-engine = create_db_engine()
-
 def test_connection() -> bool:
-    """
-    Testa a conexão com o banco de dados
-    
-    Returns:
-        bool: True se conexão bem sucedida
-    """
+    """Testa conexão e verifica se o schema existe"""
+    engine = create_db_engine()
+    if engine is None:
+        return False
     try:
-        if engine is None:
-            logger.error("Engine não inicializada")
-            return False
-            
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT version();"))
-            db_version = result.fetchone()
-            logger.info(f"Conectado ao PostgreSQL: {db_version[0]}")
-            
-            # Verificar se schema existe
-            schema_check = conn.execute(
+            version = conn.execute(text("SELECT version();")).scalar()
+            logger.info(f"PostgreSQL versão: {version}")
+            result = conn.execute(
                 text("SELECT schema_name FROM information_schema.schemata WHERE schema_name = :schema"),
                 {"schema": schema}
             )
-            
-            if schema_check.fetchone():
+            if result.fetchone():
                 logger.info(f"Schema '{schema}' encontrado")
             else:
                 logger.warning(f"Schema '{schema}' não encontrado")
-                
         return True
-        
     except Exception as e:
-        logger.error(f"Falha no teste de conexão: {str(e)}")
-        return False
-
-def create_schema_if_not_exists() -> bool:
-    """
-    Cria o schema se não existir
-    
-    Returns:
-        bool: True se schema criado ou já existia
-    """
-    try:
-        with engine.connect() as conn:
-            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-            conn.commit()
-            logger.info(f"Schema '{schema}' verificado/criado")
-            return True
-            
-    except Exception as e:
-        logger.error(f"Erro ao criar schema: {str(e)}")
+        logger.error(f"Erro ao testar conexão: {str(e)}")
         return False
 
 def get_connection_stats() -> dict:
-    """
-    Retorna estatísticas da conexão e dados
-    
-    Returns:
-        dict: Estatísticas
-    """
+    """Retorna informações básicas da conexão"""
+    engine = create_db_engine()
+    if engine is None:
+        return {"status": "Engine não disponível"}
     try:
-        if engine is None:
-            return {"status": "Engine não disponível"}
-            
         with engine.connect() as conn:
-            # Informações do banco
-            result = conn.execute(text("""
+            info = conn.execute(text("""
                 SELECT 
-                    version() as db_version,
-                    current_database() as db_name,
-                    current_user as db_user
-            """))
-            db_info = result.fetchone()
-            
-            # Estatísticas das tabelas no schema
-            tables_result = conn.execute(text("""
-                SELECT 
-                    table_name,
-                    (xpath('/row/cnt/text()', query_to_xml(
-                        format('SELECT COUNT(*) as cnt FROM %I.%I', table_schema, table_name), 
-                        true, false, '')))[1]::text::int as row_count
-                FROM information_schema.tables 
-                WHERE table_schema = :schema
-            """), {"schema": schema})
-            
-            tables_stats = {row[0]: row[1] for row in tables_result}
-            
+                    version() AS db_version,
+                    current_database() AS db_name,
+                    current_user AS db_user
+            """)).fetchone()
             return {
                 "status": "Conectado",
-                "db_version": db_info[0],
-                "db_name": db_info[1],
-                "db_user": db_info[2],
-                "schema": schema,
-                "tables": tables_stats
+                "db_version": info[0],
+                "db_name": info[1],
+                "db_user": info[2],
+                "schema": schema
             }
-            
     except Exception as e:
         return {"status": f"Erro: {str(e)}"}
+def insert_if_new(df: pd.DataFrame, table_name: str, id_column: str = "id") -> None:
+    """
+    Insere dados no banco apenas se ainda não existirem (com base no id).
+    Adiciona coluna updated_at com timestamp atual.
+    Funciona mesmo se a tabela estiver vazia.
+    """
+    engine = create_db_engine()
+    if engine is None:
+        logger.error("Engine indisponível. Abortando inserção.")
+        return
 
-
-"""
-def load_data() -> Tuple[bool, int]:
-    ""
-    Lê o CSV processado e insere os dados no banco PostgreSQL.
-    Apenas insere tasks completas (completed = True).
-    
-    Returns:
-        Tuple[bool, int]: (sucesso, linhas_inseridas)
-    ""
-    try:
-        if engine is None:
-            logger.error("Engine de banco não disponível")
-            return False, 0
-        
-        # Verificar/criar schema
-        if not create_schema_if_not_exists():
-            return False, 0
-        
-        # Ler dados processados
-        csv_path = f"{DATA_DIR}/processed_data.csv"
-        if not os.path.exists(csv_path):
-            logger.error(f"Arquivo processado não encontrado: {csv_path}")
-            return False, 0
-            
-        df = pd.read_csv(csv_path)
-        
-        if df.empty:
-            logger.warning("DataFrame vazio, nada para carregar")
-            return True, 0
-        
-        # Validar se todas as colunas necessárias estão presentes
-        required_columns = ['user_id', 'id', 'title', 'completed']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        
-        if missing_columns:
-            logger.error(f"Colunas faltando no DataFrame: {missing_columns}")
-            return False, 0
-        
-        # Verificar se há dados duplicados baseado no ID
-        duplicates = df.duplicated(subset=['id']).sum()
-        if duplicates > 0:
-            logger.warning(f"Encontrados {duplicates} IDs duplicados, removendo...")
-            df = df.drop_duplicates(subset=['id'])
-        
-        # Carregar dados
-        rows_before = get_row_count("todos")
-        
-        df.to_sql(
-            "todos", 
-            engine, 
-            if_exists="append", 
-            index=False, 
-            schema=schema,
-            method='multi'
-        )
-        
-        rows_after = get_row_count("todos")
-        rows_inserted = rows_after - rows_before
-        
-        logger.info(f"Dados carregados com sucesso: {rows_inserted} novas linhas inseridas")
-        logger.info(f"Total de linhas na tabela: {rows_after}")
-        
-        return True, rows_inserted
-        
-    except Exception as e:
-        logger.error(f"Erro ao carregar dados: {str(e)}")
-        return False, 0
-
-def get_row_count(table_name: str) -> int:
-    ""
-    Retorna o número de linhas em uma tabela
-    
-    Args:
-        table_name: Nome da tabela
-        
-    Returns:
-        int: Número de linhas
-    ""
     try:
         with engine.connect() as conn:
             result = conn.execute(
-                text(f"SELECT COUNT(*) FROM {schema}.{table_name}")
-            )
-            return result.scalar()
-    except Exception as e:
-        logger.error(f"Erro ao contar linhas: {str(e)}")
-        return 0
-"""
+                text(f'SELECT "{id_column}" FROM "{schema}"."{table_name}"')
+            ).fetchall()
 
-# Teste rápido se executado diretamente
+            existing_ids = [row[0] for row in result] if result else []
+
+            novos = df[~df[id_column].isin(existing_ids)].copy()
+
+            if novos.empty:
+                logger.info("Nenhum dado novo para inserir.")
+                return
+
+            novos["updated_at"] = datetime.now()
+
+            novos.to_sql(
+                name=table_name,
+                con=engine,
+                schema=schema,
+                if_exists="append",
+                index=False
+            )
+            logger.info(f"{len(novos)} novos registros inseridos na tabela '{table_name}'.")
+
+    except Exception as e:
+        logger.error(f"Erro ao inserir dados: {str(e)}")
+
+# Teste local
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    
-    print("Testando modulo de loading...")
-    
+    print("Testando conexão com banco")
     if test_connection():
-        print("Teste de conexão bem-sucedido!")
-        stats = get_connection_stats()
-        print(f"Estatisticas: {stats}")
+        print("Conexão OK")
+        print(get_connection_stats())
+
+        # Exemplo de uso do insert_if_new
+        df_exemplo = pd.DataFrame([
+            {"id": 1, "user_id": 1, "title": "delectus aut autem", "completed": False},
+            {"id": 2, "user_id": 1, "title": "quis ut nam facilis", "completed": True},
+        ])
+        insert_if_new(df_exemplo, table_name="tarefas", id_column="id")
     else:
-        print("Falha no teste de conexão!")
+        print("Falha na conexão")
+
+
+def load_data():
+    """Lê os dados transformados e insere no banco"""
+    df_path = "/opt/airflow/data/filtered_data.json"
+    if not os.path.exists(df_path):
+        logger.warning(f"Arquivo de dados não encontrado: {df_path}")
+        return
+
+    try:
+        df = pd.read_json(df_path)
+        insert_if_new(df, table_name="tarefas", id_column="id")
+    except Exception as e:
+        logger.error(f"Erro ao carregar dados: {str(e)}")

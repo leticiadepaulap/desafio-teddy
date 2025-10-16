@@ -1,4 +1,3 @@
-import pandas as pd
 import os
 import json
 import logging
@@ -6,53 +5,31 @@ import logging
 # Configurar logging
 logger = logging.getLogger(__name__)
 
-DATA_DIR = "/opt/airflow/dags/data"
-
-def process_data(data):
-    """
-    Recebe dados JSON e transforma em DataFrame.
-    Filtra apenas tasks completas (completed = True) e remove linhas incompletas.
-    """
-    try:
-        df = pd.json_normalize(data)
-        
-        # Renomear colunas para compatibilidade
-        df.rename(columns={"userId": "user_id"}, inplace=True)
-
-        # Filtrar apenas tasks COMPLETAS (completed = True)
-        df = df[df["completed"] == True]
-        logger.info(f"Filtrado {len(df)} tasks completas")
-
-        # Remove linhas com campos nulos
-        df = df.dropna(subset=["user_id", "id", "title", "completed"])
-
-        # Remove linhas com título vazio
-        df = df[df["title"].str.strip() != ""]
-
-        logger.info(f"Dataset final após limpeza: {len(df)} linhas")
-        return df
-        
-    except Exception as e:
-        logger.error(f"Erro no processamento dos dados: {str(e)}")
-        raise
+DATA_DIR = "/opt/airflow/data"
 
 def transform_and_save():
-    """
-    Lê o arquivo JSON bruto, transforma os dados e salva como CSV.
-    """
+    """Filtra apenas os registros com completed=True, renomeia userId→user_id e salva em novo arquivo"""
     try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        
-        with open(f"{DATA_DIR}/raw_data.json", "r") as f:
+        input_path = os.path.join(DATA_DIR, "raw_data.json")
+        output_path = os.path.join(DATA_DIR, "filtered_data.json")
+
+        with open(input_path, "r") as f:
             data = json.load(f)
 
-        df = process_data(data)
-        
-        # Salvar dados processados
-        df.to_csv(f"{DATA_DIR}/processed_data.csv", index=False)
-        logger.info(f"Dados transformados salvos em {DATA_DIR}/processed_data.csv")
-        
+        # Filtra e renomeia campos
+        filtered = []
+        for item in data:
+            if item.get("completed") is True:
+                # renomear a chave "userId" para "user_id", se existir
+                if "userId" in item:
+                    item["user_id"] = item.pop("userId")
+                filtered.append(item)
+
+        with open(output_path, "w") as f:
+            json.dump(filtered, f, indent=2)
+
+        logger.info(f"{len(filtered)} registros filtrados e salvos em {output_path}")
+
     except Exception as e:
-        logger.error(f"Erro no processo de transformação: {str(e)}")
+        logger.error(f"Erro na transformação dos dados: {str(e)}")
         raise
-    
